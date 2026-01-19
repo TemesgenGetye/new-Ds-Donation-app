@@ -1,0 +1,298 @@
+openapi: 3.0.3
+info:
+  title: Request Service API
+  description: |
+    Microservice for managing donation requests.
+
+    This service handles:
+    - Creating new requests for donations
+    - Listing requests with filters
+    - Updating request status and message
+    - Publishing events via RabbitMQ
+
+    ## Events Published
+    - `request.created` - When a request is created
+    - `request.status.changed` - When request status changes
+  version: 1.0.0
+  contact:
+    name: Request Service Team
+    email: support@donation-platform.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3004
+    description: Local development server
+
+tags:
+  - name: Requests
+    description: Request management operations
+  - name: Health
+    description: Service health check
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: Returns the health status of the service
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  timestamp:
+                    type: string
+                    format: date-time
+                  service:
+                    type: string
+                    example: "request-service"
+                  checks:
+                    type: object
+                    properties:
+                      database:
+                        type: string
+                        example: "connected"
+                      messaging:
+                        type: string
+                        example: "connected"
+
+  /api/requests:
+    get:
+      tags:
+        - Requests
+      summary: List requests
+      description: Retrieve a list of requests with optional filtering.
+      operationId: getRequests
+      parameters:
+        - name: donation_id
+          in: query
+          description: Filter by donation ID (UUID)
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: recipient_id
+          in: query
+          description: Filter by recipient ID (UUID)
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          description: Filter by request status
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, rejected]
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Request"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - Requests
+      summary: Create a new request
+      description: Create a new request for a donation.
+      operationId: createRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRequestRequest"
+      responses:
+        "201":
+          description: Request created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Request"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/requests/{id}:
+    get:
+      tags:
+        - Requests
+      summary: Get request by ID
+      description: Retrieve a specific request by its UUID.
+      operationId: getRequestById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Request UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Request"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      tags:
+        - Requests
+      summary: Update request
+      description: Update an existing request (e.g. status, message).
+      operationId: updateRequest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Request UUID
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRequestRequest"
+      responses:
+        "200":
+          description: Request updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Request"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  schemas:
+    Request:
+      type: object
+      required:
+        - id
+        - donation_id
+        - recipient_id
+        - message
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        donation_id:
+          type: string
+          format: uuid
+        recipient_id:
+          type: string
+          format: uuid
+        message:
+          type: string
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateRequestRequest:
+      type: object
+      required:
+        - donation_id
+        - recipient_id
+        - message
+      properties:
+        donation_id:
+          type: string
+          format: uuid
+        recipient_id:
+          type: string
+          format: uuid
+        message:
+          type: string
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+          description: Optional initial status (defaults to 'pending')
+
+    UpdateRequestRequest:
+      type: object
+      properties:
+        message:
+          type: string
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+
+    Error:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+
+  responses:
+    BadRequest:
+      description: Bad request - validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
