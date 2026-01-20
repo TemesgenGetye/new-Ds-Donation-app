@@ -47,7 +47,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     });
 
-   
+    // Listen for authentication state changes (login, logout, refresh)
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log("Auth state changed:", event, session?.user?.id);
+      setSession(session);
+      setUser(session?.user ?? null);
+
+      if (session?.user) {
+        await fetchProfile(session.user.id);
+      } else {
+        setProfile(null);
+        setLoading(false);
+      }
+    });
 
     return () => subscription.unsubscribe();
   }, []);
