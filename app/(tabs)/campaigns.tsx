@@ -3,6 +3,7 @@ import ReportModal from "@/components/ReportModal";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { Database } from "@/types/database";
+import { createClient } from "@supabase/supabase-js";
 import { useRouter } from "expo-router";
 import {
   AlertCircle,
@@ -19,6 +20,7 @@ import {
   Alert,
   FlatList,
   Image,
+  Platform,
   RefreshControl,
   StyleSheet,
   Text,
@@ -84,19 +86,13 @@ export default function CampaignsScreen() {
 
   const fetchCampaigns = async () => {
     try {
-      let query = supabase
-        .from("campaigns")
-        .select(
-          `
-          *,
-          profiles:recipient_id (
-            full_name,
-            avatar_url
-          )
-        `
-        )
-        .order("created_at", { ascending: false });
-
+      // Use NEW campaign database directly (not old database)
+      const campaignSupabaseUrl = process.env.EXPO_PUBLIC_CAMPAIGN_SUPABASE_URL || "https://xhkixkkslqvhkzsxddge.supabase.co";
+      const campaignSupabaseKey = process.env.EXPO_PUBLIC_CAMPAIGN_SUPABASE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhoa2l4a2tzbHF2aGt6c3hkZGdlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxMDY0NzYsImV4cCI6MjA4NDY4MjQ3Nn0.pE8N8sOIY2Sn4xMz2FRKceU7N-N7slEFxDEJdLTLu8A";
+      const campaignSupabase = createClient(campaignSupabaseUrl, campaignSupabaseKey);
+      
+      let query = campaignSupabase.from("campaigns").select("*").order("created_at", { ascending: false });
+      
       if (profile?.role === "recipient") {
         if (profile.recipient_status === "approved") {
           query = query.eq("recipient_id", profile.id);
@@ -108,9 +104,32 @@ export default function CampaignsScreen() {
       }
 
       const { data, error } = await query;
-
       if (error) throw error;
-      setCampaigns(data || []);
+      
+      // Fetch profile data for each campaign from main database
+      const campaignsWithProfiles = await Promise.all(
+        (data || []).map(async (campaign: any) => {
+          try {
+            const { data: profileData } = await supabase
+              .from("profiles")
+              .select("full_name, avatar_url")
+              .eq("id", campaign.recipient_id)
+              .single();
+            
+            return {
+              ...campaign,
+              profiles: profileData || { full_name: "Unknown", avatar_url: null },
+            };
+          } catch {
+            return {
+              ...campaign,
+              profiles: { full_name: "Unknown", avatar_url: null },
+            };
+          }
+        })
+      );
+
+      setCampaigns(campaignsWithProfiles);
     } catch (error) {
       console.error("Error fetching campaigns:", error);
     } finally {
@@ -122,6 +141,18 @@ export default function CampaignsScreen() {
   const onRefresh = () => {
     setRefreshing(true);
     fetchCampaigns();
+  };
+
+  // Helper function to get messaging service URL (same pattern as campaign service)
+  const getMessagingServiceUrl = (): string => {
+    const MACHINE_IP = "192.168.1.3";
+    if (process.env.EXPO_PUBLIC_MESSAGING_SERVICE_URL) {
+      return process.env.EXPO_PUBLIC_MESSAGING_SERVICE_URL;
+    }
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      return `http://${MACHINE_IP}:3003`;
+    }
+    return "http://localhost:3003";
   };
 
   const handleMessageCampaign = async (campaign: Campaign) => {
@@ -138,18 +169,30 @@ export default function CampaignsScreen() {
             if (!message?.trim()) return;
 
             try {
-              const { error } = await supabase.from("messages").insert({
-                campaign_id: campaign.id,
-                sender_id: profile.id,
-                receiver_id: campaign.recipient_id,
-                content: message.trim(),
+              // Call messaging-service API instead of direct Supabase insert
+              const messagingServiceUrl = getMessagingServiceUrl();
+              const response = await fetch(`${messagingServiceUrl}/api/messages`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  campaign_id: campaign.id,
+                  sender_id: profile.id,
+                  receiver_id: campaign.recipient_id,
+                  content: message.trim(),
+                }),
               });
 
-              if (error) throw error;
+              if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: "Failed to send message" }));
+                throw new Error(errorData.error || "Failed to send message");
+              }
+
               Alert.alert("Success", "Message sent successfully!");
-            } catch (error) {
+            } catch (error: any) {
               console.error("Error sending message:", error);
-              Alert.alert("Error", "Failed to send message");
+              Alert.alert("Error", error.message || "Failed to send message");
             }
           },
         },

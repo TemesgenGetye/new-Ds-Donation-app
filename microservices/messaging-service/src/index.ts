@@ -8,8 +8,8 @@ import swaggerUi from "swagger-ui-express";
 import YAML from "yamljs";
 import { connectRabbitMQ } from "./config/messaging";
 import { errorHandler } from "./middleware/error.middleware";
-import messageRoutes from "./routes/message.routes";
 import healthRoutes from "./routes/health.routes";
+import messageRoutes from "./routes/message.routes";
 import { logger } from "./utils/logger";
 
 // MUST call dotenv.config() immediately, before any imports that use process.env
@@ -85,13 +85,14 @@ app.use(errorHandler);
 // Start server
 const startServer = async () => {
   try {
-    // Connect to RabbitMQ
+    // Connect to RabbitMQ (this also starts the consumer)
     await connectRabbitMQ();
 
     // Start HTTP server
     app.listen(PORT, () => {
       logger.info(`🚀 Messaging Service running on port ${PORT}`);
       logger.info(`📝 Environment: ${process.env.NODE_ENV || "development"}`);
+      logger.info(`👂 Consumer is listening for campaign events...`);
     });
   } catch (error) {
     logger.error("Failed to start server:", error);

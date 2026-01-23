@@ -1,5 +1,6 @@
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
+import { createClient } from "@supabase/supabase-js";
 import { useRouter } from "expo-router";
 import {
   CheckCircle,
@@ -17,6 +18,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -78,25 +80,52 @@ export default function AdminScreen() {
   };
 
   const fetchCampaigns = async () => {
-    const { data, error } = await supabase
+    try {
+      // Use NEW campaign database directly (not old database)
+      const campaignSupabaseUrl = process.env.EXPO_PUBLIC_CAMPAIGN_SUPABASE_URL || "https://xhkixkkslqvhkzsxddge.supabase.co";
+      const campaignSupabaseKey = process.env.EXPO_PUBLIC_CAMPAIGN_SUPABASE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhoa2l4a2tzbHF2aGt6c3hkZGdlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxMDY0NzYsImV4cCI6MjA4NDY4MjQ3Nn0.pE8N8sOIY2Sn4xMz2FRKceU7N-N7slEFxDEJdLTLu8A";
+      const campaignSupabase = createClient(campaignSupabaseUrl, campaignSupabaseKey);
+      
+      const { data, error } = await campaignSupabase
       .from("campaigns")
-      .select(
-        `
-        *,
-        profiles:recipient_id (
-          full_name,
-          recipient_status
-        )
-      `
-      )
-      .eq("status", "pending");
+        .select("*")
+        .eq("status", "pending")
+        .order("created_at", { ascending: false });
 
     if (error) {
       console.error("Error fetching campaigns:", error);
       throw error;
     }
-    console.log("Fetched campaigns:", data);
-    setCampaigns(data || []);
+      
+      // Fetch profile data for each campaign from main database
+      const campaignsWithProfiles = await Promise.all(
+        (data || []).map(async (campaign: any) => {
+          try {
+            const { data: profileData } = await supabase
+              .from("profiles")
+              .select("full_name, recipient_status")
+              .eq("id", campaign.recipient_id)
+              .single();
+            
+            return {
+              ...campaign,
+              profiles: profileData || { full_name: "Unknown", recipient_status: null },
+            };
+          } catch {
+            return {
+              ...campaign,
+              profiles: { full_name: "Unknown", recipient_status: null },
+            };
+          }
+        })
+      );
+
+      console.log("Fetched campaigns:", campaignsWithProfiles);
+      setCampaigns(campaignsWithProfiles);
+    } catch (error) {
+      console.error("Error fetching campaigns:", error);
+      setCampaigns([]);
+    }
   };
 
   const fetchDonations = async () => {
@@ -157,29 +186,59 @@ export default function AdminScreen() {
     }
   };
 
+  const getCampaignServiceUrl = (): string => {
+    const MACHINE_IP = "192.168.1.3";
+    if (process.env.EXPO_PUBLIC_CAMPAIGN_SERVICE_URL && process.env.EXPO_PUBLIC_CAMPAIGN_SERVICE_URL !== "http://localhost:3002") {
+      return process.env.EXPO_PUBLIC_CAMPAIGN_SERVICE_URL;
+    }
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      return `http://${MACHINE_IP}:3002`;
+    }
+    return "http://localhost:3002";
+  };
+
   const handleCampaignApproval = async (
     campaignId: string,
     approved: boolean
   ) => {
     try {
-      const { error } = await supabase
-        .from("campaigns")
-        .update({
+      // Call campaign-service API to update status (this will publish RabbitMQ events)
+      const campaignServiceUrl = getCampaignServiceUrl();
+      const response = await fetch(`${campaignServiceUrl}/api/campaigns/${campaignId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
           status: approved ? "active" : "rejected",
-        })
-        .eq("id", campaignId);
+        }),
+      });
 
-      if (error) throw error;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to update campaign" }));
+        throw new Error(errorData.error || `Failed to update campaign: ${response.status}`);
+      }
 
       Alert.alert(
         "Success",
         `Campaign ${approved ? "approved" : "rejected"} successfully`
       );
       fetchCampaigns();
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error updating campaign:", error);
-      Alert.alert("Error", "Failed to update campaign status");
+      Alert.alert("Error", error.message || "Failed to update campaign status");
     }
+  };
+
+  const getDonationServiceUrl = (): string => {
+    const MACHINE_IP = "192.168.1.3";
+    if (process.env.EXPO_PUBLIC_DONATION_SERVICE_URL && process.env.EXPO_PUBLIC_DONATION_SERVICE_URL !== "http://localhost:3001") {
+      return process.env.EXPO_PUBLIC_DONATION_SERVICE_URL;
+    }
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      return `http://${MACHINE_IP}:3001`;
+    }
+    return "http://localhost:3001";
   };
 
   const handleDonationApproval = async (
@@ -187,23 +246,31 @@ export default function AdminScreen() {
     approved: boolean
   ) => {
     try {
-      const { error } = await supabase
-        .from("donations")
-        .update({
+      // Call donation-service API to update status (this will publish RabbitMQ events)
+      const donationServiceUrl = getDonationServiceUrl();
+      const response = await fetch(`${donationServiceUrl}/api/donations/${donationId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
           status: approved ? "available" : "rejected",
-        })
-        .eq("id", donationId);
+        }),
+      });
 
-      if (error) throw error;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to update donation" }));
+        throw new Error(errorData.error || `Failed to update donation: ${response.status}`);
+      }
 
       Alert.alert(
         "Success",
         `Donation ${approved ? "approved" : "rejected"} successfully`
       );
       fetchDonations();
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error updating donation:", error);
-      Alert.alert("Error", "Failed to update donation status");
+      Alert.alert("Error", error.message || "Failed to update donation status");
     }
   };
 

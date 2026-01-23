@@ -1,7 +1,8 @@
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
+import { createClient } from "@supabase/supabase-js";
 import { decode as atob } from "base-64";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import {
@@ -26,6 +27,56 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+// Campaign database client (separate from main database) - ONLY for image uploads
+const campaignSupabaseUrl = process.env.EXPO_PUBLIC_CAMPAIGN_SUPABASE_URL || "https://xhkixkkslqvhkzsxddge.supabase.co";
+const campaignSupabaseKey = process.env.EXPO_PUBLIC_CAMPAIGN_SUPABASE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhoa2l4a2tzbHF2aGt6c3hkZGdlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxMDY0NzYsImV4cCI6MjA4NDY4MjQ3Nn0.pE8N8sOIY2Sn4xMz2FRKceU7N-N7slEFxDEJdLTLu8A";
+const campaignSupabase = createClient(campaignSupabaseUrl, campaignSupabaseKey);
+
+// Helper function to get campaign service URL based on platform
+// IMPORTANT: Campaigns MUST be created via API to publish RabbitMQ events!
+// NOTE: For Expo Go on physical devices, always use IP address, not localhost!
+const getCampaignServiceUrl = (): string => {
+  // Your machine's IP address (update this if your IP changes)
+  // Find it with: ipconfig getifaddr en0 (Mac) or ipconfig (Windows)
+  const MACHINE_IP = "192.168.1.3";
+  const IP_URL = `http://${MACHINE_IP}:3002`;
+  
+  // Check if explicitly set via environment variable
+  const envUrl = process.env.EXPO_PUBLIC_CAMPAIGN_SERVICE_URL;
+  if (envUrl) {
+    console.log(`🔧 Environment variable found: ${envUrl}`);
+    // If env var is set to localhost, override it with IP for mobile
+    if (envUrl.includes('localhost') && Platform.OS !== 'web') {
+      console.log(`⚠️ Env var is localhost but on mobile, overriding to IP: ${IP_URL}`);
+      return IP_URL;
+    }
+    return envUrl;
+  }
+  
+  // Platform-specific defaults
+  const platform = Platform.OS;
+  console.log(`🔍 Platform detected: ${platform}`);
+  console.log(`🔍 __DEV__: ${__DEV__}`);
+  
+  // For Expo Go and mobile platforms, ALWAYS use IP address
+  // localhost doesn't work from Expo Go on physical devices
+  if (platform === 'android' || platform === 'ios') {
+    console.log(`📱 Mobile platform (${platform}) detected, using IP: ${IP_URL}`);
+    return IP_URL;
+  }
+  
+  // Safety fallback: If not web, assume mobile (Expo Go) and use IP
+  // This handles cases where platform detection might fail
+  if (platform !== 'web') {
+    console.log(`⚠️ Non-web platform (${platform}) detected, defaulting to IP: ${IP_URL}`);
+    return IP_URL;
+  }
+  
+  // For web platform only, use localhost (runs on same machine)
+  console.log(`🌐 Web platform detected, using: http://localhost:3002`);
+  return "http://localhost:3002";
+};
 
 export default function CreateScreen() {
   const { profile } = useAuth();
@@ -95,7 +146,7 @@ export default function CreateScreen() {
     return bytes;
   }
 
-  // Accepts a uri, not using the global image state
+  // Upload image for donations (old database)
   const uploadImage = async (uri: string | null) => {
     if (!uri) return null;
     try {
@@ -113,6 +164,7 @@ export default function CreateScreen() {
         const response = await fetch(uri);
         fileData = await response.blob();
       } else {
+        // Use legacy expo-file-system API (readAsStringAsync is deprecated but still works)
         const base64 = await FileSystem.readAsStringAsync(uri, {
           encoding: FileSystem.EncodingType.Base64,
         });
@@ -140,6 +192,65 @@ export default function CreateScreen() {
     }
   };
 
+  // Upload image for campaigns (new database)
+  const uploadCampaignImage = async (uri: string | null) => {
+    if (!uri) return null;
+    try {
+      let fileExt = uri.split(".").pop();
+      if (!fileExt || fileExt.length > 5) fileExt = "jpg";
+      const fileName = `${Date.now()}-${Math.random()
+        .toString(36)
+        .substring(2)}.${fileExt}`;
+      let fileData;
+      let uploadOptions: any = {
+        contentType: `image/${fileExt === "jpg" ? "jpeg" : fileExt}`,
+        upsert: false,
+      };
+      if (Platform.OS === "web") {
+        const response = await fetch(uri);
+        fileData = await response.blob();
+      } else {
+        // Use legacy expo-file-system API (readAsStringAsync is deprecated but still works)
+        const base64 = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        fileData = base64ToUint8Array(base64);
+        if (uploadOptions.contentEncoding) delete uploadOptions.contentEncoding;
+      }
+      // Upload to campaign storage bucket in NEW database
+      const uploadResult = await campaignSupabase.storage
+        .from("campaigns")
+        .upload(fileName, fileData, uploadOptions);
+      if (uploadResult.error) {
+        console.error("Campaign image upload error:", uploadResult.error);
+        throw uploadResult.error;
+      }
+      const publicUrlResult = campaignSupabase.storage
+        .from("campaigns")
+        .getPublicUrl(fileName);
+      if (!publicUrlResult.data || !publicUrlResult.data.publicUrl) {
+        Alert.alert("Upload Error", "No image URL returned. Please try again.");
+        return null;
+      }
+      return publicUrlResult.data.publicUrl;
+    } catch (error: any) {
+      console.error("Campaign image upload error:", error);
+      Alert.alert("Upload Error", "Failed to upload campaign image. Please try again.");
+      return null;
+    }
+  };
+
+  const getDonationServiceUrl = (): string => {
+    const MACHINE_IP = "192.168.1.3";
+    if (process.env.EXPO_PUBLIC_DONATION_SERVICE_URL && process.env.EXPO_PUBLIC_DONATION_SERVICE_URL !== "http://localhost:3001") {
+      return process.env.EXPO_PUBLIC_DONATION_SERVICE_URL;
+    }
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      return `http://${MACHINE_IP}:3001`;
+    }
+    return "http://localhost:3001";
+  };
+
   const createDonation = async () => {
     if (
       !donationTitle ||
@@ -164,16 +275,30 @@ export default function CreateScreen() {
           return;
         }
       }
-      const insertResult = await supabase.from("donations").insert({
-        donor_id: profile.id,
-        title: donationTitle,
-        description: donationDescription,
-        category: donationCategory,
-        location: donationLocation,
-        image_url: imageUrl,
-        status: "pending",
+      
+      // Call donation-service API instead of direct Supabase insert
+      const donationServiceUrl = getDonationServiceUrl();
+      const response = await fetch(`${donationServiceUrl}/api/donations`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          donor_id: profile.id,
+          title: donationTitle,
+          description: donationDescription,
+          category: donationCategory,
+          location: donationLocation,
+          image_url: imageUrl,
+          status: "pending",
+        }),
       });
-      if (insertResult.error) throw insertResult.error;
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to create donation" }));
+        throw new Error(errorData.error || `Failed to create donation: ${response.status}`);
+      }
+
       Alert.alert("Success", "Donation submitted for approval!", [
         { text: "OK", onPress: () => router.push("/(tabs)") },
       ]);
@@ -182,8 +307,9 @@ export default function CreateScreen() {
       setDonationCategory("");
       setDonationLocation("");
       setDonationImage(null);
-    } catch {
-      Alert.alert("Error", "Failed to create donation");
+    } catch (error: any) {
+      console.error("Error creating donation:", error);
+      Alert.alert("Error", error.message || "Failed to create donation");
     } finally {
       setLoading(false);
     }
@@ -207,13 +333,22 @@ export default function CreateScreen() {
     try {
       let imageUrl = null;
       if (campaignImage) {
-        imageUrl = await uploadImage(campaignImage);
+        // Upload to campaign storage bucket in new database
+        imageUrl = await uploadCampaignImage(campaignImage);
         if (!imageUrl) {
           setLoading(false);
           return;
         }
       }
-      const insertResult = await supabase.from("campaigns").insert({
+      
+      // IMPORTANT: Call campaign-service API (NOT direct Supabase insert)
+      // This ensures RabbitMQ events are published!
+      const campaignServiceUrl = getCampaignServiceUrl();
+      const apiUrl = `${campaignServiceUrl}/api/campaigns`;
+      console.log(`🌐 Calling campaign-service API at: ${apiUrl}`);
+      console.log(`📱 Platform: ${Platform.OS}, URL: ${campaignServiceUrl}`);
+      
+      const requestBody = {
         recipient_id: profile.id,
         title: campaignTitle,
         description: campaignDescription,
@@ -222,8 +357,35 @@ export default function CreateScreen() {
         goal_amount: campaignGoal ? parseFloat(campaignGoal) : null,
         image_url: imageUrl,
         status: "pending",
-      });
-      if (insertResult.error) throw insertResult.error;
+      };
+      console.log(`📦 Request body:`, JSON.stringify(requestBody).substring(0, 200));
+      
+      try {
+        const response = await fetch(apiUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        console.log(`📡 Response status: ${response.status} ${response.statusText}`);
+        
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: "Failed to create campaign" }));
+          console.error(`❌ API Error:`, errorData);
+          throw new Error(errorData.error || `Failed to create campaign: ${response.status}`);
+        }
+        
+        const campaign = await response.json();
+        console.log(`✅ Campaign created via API:`, campaign.id);
+      } catch (fetchError: any) {
+        console.error(`❌ Network/Fetch Error:`, fetchError);
+        console.error(`   - Message: ${fetchError.message}`);
+        console.error(`   - URL attempted: ${apiUrl}`);
+        console.error(`   - Make sure your phone and computer are on the same WiFi network`);
+        throw fetchError;
+      }
       Alert.alert("Success", "Campaign submitted for approval!", [
         { text: "OK", onPress: () => router.push({ pathname: "/campaigns" }) },
       ]);
@@ -233,8 +395,9 @@ export default function CreateScreen() {
       setCampaignLocation("");
       setCampaignGoal("");
       setCampaignImage(null);
-    } catch {
-      Alert.alert("Error", "Failed to create campaign");
+    } catch (error: any) {
+      console.error("Campaign creation error:", error);
+      Alert.alert("Error", error.message || "Failed to create campaign");
     } finally {
       setLoading(false);
     }

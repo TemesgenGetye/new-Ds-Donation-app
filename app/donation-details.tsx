@@ -19,6 +19,7 @@ import {
   Alert,
   Image,
   Modal,
+  Platform,
   TextInput as RNTextInput,
   ScrollView,
   StyleSheet,
@@ -98,22 +99,74 @@ export default function DonationDetailsScreen() {
     setRequestModal(true);
   };
 
+  const getRequestServiceUrl = (): string => {
+    const MACHINE_IP = "192.168.1.3";
+    if (process.env.EXPO_PUBLIC_REQUEST_SERVICE_URL && process.env.EXPO_PUBLIC_REQUEST_SERVICE_URL !== "http://localhost:3004") {
+      return process.env.EXPO_PUBLIC_REQUEST_SERVICE_URL;
+    }
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      return `http://${MACHINE_IP}:3004`;
+    }
+    return "http://localhost:3004";
+  };
+
   const submitRequest = async () => {
     if (!profile || !requestMessage.trim()) return;
     setRequestLoading(true);
     try {
-      const { error } = await supabase.from("requests").insert({
-        donation_id: params.id as string,
-        recipient_id: profile.id,
-        message: requestMessage.trim(),
+      const requestServiceUrl = getRequestServiceUrl();
+      
+      // Check if request already exists via API
+      const checkResponse = await fetch(
+        `${requestServiceUrl}/api/requests?donation_id=${params.id}&recipient_id=${profile.id}`
+      );
+      
+      if (checkResponse.ok) {
+        const existingRequests = await checkResponse.json();
+        if (existingRequests && existingRequests.length > 0) {
+          const existingRequest = existingRequests[0];
+          const statusMessage = existingRequest.status === "pending" 
+            ? "You have already sent a request for this donation. It is pending approval."
+            : existingRequest.status === "approved"
+            ? "Your request for this donation has already been approved."
+            : "Your request for this donation was rejected.";
+          Alert.alert("Request Already Exists", statusMessage);
+          setRequestModal(false);
+          setRequestMessage("");
+          setRequestLoading(false);
+          return;
+        }
+      }
+
+      // Create request via API
+      const response = await fetch(`${requestServiceUrl}/api/requests`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          donation_id: params.id as string,
+          recipient_id: profile.id,
+          message: requestMessage.trim(),
+        }),
       });
-      if (error) throw error;
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to send request" }));
+        if (errorData.error && errorData.error.includes("already exists")) {
+          Alert.alert("Request Already Exists", "You have already sent a request for this donation.");
+        } else {
+          throw new Error(errorData.error || `Failed to send request: ${response.status}`);
+        }
+        return;
+      }
+
       setRequestModal(false);
       setRequestMessage("");
       Alert.alert("Success", "Request sent successfully!");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error sending request:", error);
-      Alert.alert("Error", "Failed to send request");
+      Alert.alert("Error", error.message || "Failed to send request");
     } finally {
       setRequestLoading(false);
     }

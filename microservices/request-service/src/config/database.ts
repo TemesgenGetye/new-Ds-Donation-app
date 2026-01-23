@@ -5,14 +5,17 @@ import path from "path";
 // Load environment variables from .env file in the service root
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
-const supabaseUrl = process.env.SUPABASE_URL || "";
-const supabaseKey = process.env.SUPABASE_KEY || "";
+// Prioritize REQUEST_SUPABASE_URL and REQUEST_SUPABASE_KEY
+const supabaseUrl = process.env.REQUEST_SUPABASE_URL || "";
+const supabaseKey = process.env.REQUEST_SUPABASE_KEY || "";
 
 if (!supabaseUrl || !supabaseKey) {
   throw new Error(
-    "Missing Supabase configuration. Please set SUPABASE_URL and SUPABASE_KEY"
+    "Missing Supabase configuration. Please set REQUEST_SUPABASE_URL and REQUEST_SUPABASE_KEY"
   );
 }
+
+console.log(`🔗 Request Service connecting to: ${supabaseUrl.replace(/\/\/.*@/, '//***@')}`);
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
 

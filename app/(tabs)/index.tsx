@@ -5,26 +5,27 @@ import { supabase } from "@/lib/supabase";
 import { Database } from "@/types/database";
 import { useRouter } from "expo-router";
 import {
-  AlertCircle,
-  Clock,
-  Filter,
-  Flag,
-  MapPin,
-  Search,
-  Star,
-  User,
+    AlertCircle,
+    Clock,
+    Filter,
+    Flag,
+    MapPin,
+    Search,
+    Star,
+    User,
 } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import {
-  Alert,
-  FlatList,
-  Image,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    Alert,
+    FlatList,
+    Image,
+    Platform,
+    RefreshControl,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -135,17 +136,55 @@ export default function HomeScreen() {
             if (!message?.trim()) return;
 
             try {
-              const { error } = await supabase.from("requests").insert({
-                donation_id: donationId,
-                recipient_id: profile.id,
-                message: message.trim(),
+              const MACHINE_IP = "192.168.1.3";
+              const requestServiceUrl = process.env.EXPO_PUBLIC_REQUEST_SERVICE_URL || 
+                (Platform.OS === 'android' || Platform.OS === 'ios' ? `http://${MACHINE_IP}:3004` : "http://localhost:3004");
+              
+              // Check if request already exists via API
+              const checkResponse = await fetch(
+                `${requestServiceUrl}/api/requests?donation_id=${donationId}&recipient_id=${profile.id}`
+              );
+              
+              if (checkResponse.ok) {
+                const existingRequests = await checkResponse.json();
+                if (existingRequests && existingRequests.length > 0) {
+                  const existingRequest = existingRequests[0];
+                  const statusMessage = existingRequest.status === "pending" 
+                    ? "You have already sent a request for this donation. It is pending approval."
+                    : existingRequest.status === "approved"
+                    ? "Your request for this donation has already been approved."
+                    : "Your request for this donation was rejected.";
+                  Alert.alert("Request Already Exists", statusMessage);
+                  return;
+                }
+              }
+
+              // Create request via API
+              const response = await fetch(`${requestServiceUrl}/api/requests`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  donation_id: donationId,
+                  recipient_id: profile.id,
+                  message: message.trim(),
+                }),
               });
 
-              if (error) throw error;
+              if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: "Failed to send request" }));
+                if (errorData.error && errorData.error.includes("already exists")) {
+                  Alert.alert("Request Already Exists", "You have already sent a request for this donation.");
+                } else {
+                  throw new Error(errorData.error || `Failed to send request: ${response.status}`);
+                }
+                return;
+              }
               Alert.alert("Success", "Request sent successfully!");
-            } catch (error) {
+            } catch (error: any) {
               console.error("Error sending request:", error);
-              Alert.alert("Error", "Failed to send request");
+              Alert.alert("Error", error.message || "Failed to send request");
             }
           },
         },

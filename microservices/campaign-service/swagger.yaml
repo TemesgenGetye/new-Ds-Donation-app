@@ -1,0 +1,577 @@
+openapi: 3.0.3
+info:
+  title: Campaign Service API
+  description: |
+    Microservice for managing fundraising campaigns.
+
+    This service handles all campaign-related operations including:
+    - Creating new fundraising campaigns
+    - Retrieving campaigns with filtering
+    - Updating campaign details and status
+    - Contributing money to campaigns
+    - Deleting campaigns
+    - Publishing events via RabbitMQ
+
+    ## Events Published
+    - `campaign.created` - When a campaign is created
+    - `campaign.status.changed` - When campaign status changes
+    - `campaign.contributed` - When someone contributes to a campaign
+    - `campaign.completed` - When campaign goal is reached
+    - `campaign.deleted` - When a campaign is deleted
+  version: 1.0.0
+  contact:
+    name: Campaign Service Team
+    email: support@donation-platform.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3002
+    description: Local development server
+  - url: http://localhost:3002/api
+    description: Local API base path
+  - url: https://api.donation-platform.com
+    description: Production server
+
+tags:
+  - name: Campaigns
+    description: Campaign management operations
+  - name: Contributions
+    description: Campaign contribution operations
+  - name: Health
+    description: Service health check
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: Returns the health status of the service
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2025-01-15T10:30:00Z"
+                  service:
+                    type: string
+                    example: "campaign-service"
+                  database:
+                    type: string
+                    example: "connected"
+                  messaging:
+                    type: string
+                    example: "connected"
+
+  /api/campaigns:
+    get:
+      tags:
+        - Campaigns
+      summary: List campaigns
+      description: |
+        Retrieve a list of campaigns with optional filtering.
+        Supports filtering by status, category, and recipient_id.
+      operationId: getCampaigns
+      parameters:
+        - name: status
+          in: query
+          description: Filter by campaign status
+          required: false
+          schema:
+            type: string
+            enum: [pending, active, paused, completed, rejected]
+          example: active
+        - name: category
+          in: query
+          description: Filter by campaign category
+          required: false
+          schema:
+            type: string
+          example: Medical
+        - name: recipient_id
+          in: query
+          description: Filter by recipient ID (UUID)
+          required: false
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Campaign"
+              example:
+                - id: "550e8400-e29b-41d4-a716-446655440000"
+                  recipient_id: "660e8400-e29b-41d4-a716-446655440001"
+                  title: "Medical Fund"
+                  description: "Help with medical expenses"
+                  category: "Medical"
+                  location: "Addis Ababa"
+                  goal_amount: 5000
+                  collected_amount: 2500
+                  image_url: "https://example.com/image.jpg"
+                  status: "active"
+                  created_at: "2025-01-15T10:00:00Z"
+                  updated_at: "2025-01-15T10:00:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - Campaigns
+      summary: Create a new campaign
+      description: |
+        Create a new fundraising campaign. The campaign will be created with status 'pending' by default.
+        An event will be published to RabbitMQ upon successful creation.
+      operationId: createCampaign
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCampaignRequest"
+            example:
+              recipient_id: "660e8400-e29b-41d4-a716-446655440001"
+              title: "Medical Fund"
+              description: "Help with medical expenses for surgery"
+              category: "Medical"
+              location: "Addis Ababa, Ethiopia"
+              goal_amount: 5000
+              image_url: "https://example.com/image.jpg"
+              status: "pending"
+      responses:
+        "201":
+          description: Campaign created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/campaigns/{id}:
+    get:
+      tags:
+        - Campaigns
+      summary: Get campaign by ID
+      description: Retrieve a specific campaign by its UUID
+      operationId: getCampaignById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Campaign UUID
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      tags:
+        - Campaigns
+      summary: Update campaign
+      description: |
+        Update an existing campaign. Only provided fields will be updated.
+        An event will be published if the status changes.
+      operationId: updateCampaign
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Campaign UUID
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCampaignRequest"
+            example:
+              title: "Updated Campaign Title"
+              status: "active"
+              goal_amount: 6000
+      responses:
+        "200":
+          description: Campaign updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      tags:
+        - Campaigns
+      summary: Delete campaign
+      description: |
+        Delete a campaign by ID. An event will be published to RabbitMQ.
+      operationId: deleteCampaign
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Campaign UUID
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        "200":
+          description: Campaign deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Campaign deleted successfully"
+                  id:
+                    type: string
+                    format: uuid
+                    example: "550e8400-e29b-41d4-a716-446655440000"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/campaigns/{id}/contribute:
+    post:
+      tags:
+        - Contributions
+      summary: Contribute to campaign
+      description: |
+        Add a monetary contribution to a campaign. The collected_amount will be updated.
+        An event will be published to RabbitMQ. If the goal is reached, a completion event is also published.
+      operationId: contributeToCampaign
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Campaign UUID
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContributeRequest"
+            example:
+              amount: 100.50
+      responses:
+        "200":
+          description: Contribution successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  schemas:
+    Campaign:
+      type: object
+      required:
+        - id
+        - recipient_id
+        - title
+        - description
+        - category
+        - location
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique campaign identifier
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        recipient_id:
+          type: string
+          format: uuid
+          description: ID of the user who created the campaign
+          example: "660e8400-e29b-41d4-a716-446655440001"
+        title:
+          type: string
+          description: Title of the campaign
+          example: "Medical Fund"
+          minLength: 1
+        description:
+          type: string
+          description: Detailed description of the campaign
+          example: "Help with medical expenses for surgery"
+          minLength: 1
+        category:
+          type: string
+          description: Category of the campaign
+          example: "Medical"
+          minLength: 1
+        location:
+          type: string
+          description: Location of the campaign
+          example: "Addis Ababa, Ethiopia"
+          minLength: 1
+        goal_amount:
+          type: number
+          format: float
+          nullable: true
+          description: Target amount for the campaign (optional)
+          example: 5000
+          minimum: 0
+        collected_amount:
+          type: number
+          format: float
+          nullable: true
+          description: Amount collected so far
+          example: 2500
+          minimum: 0
+        image_url:
+          type: string
+          format: uri
+          nullable: true
+          description: URL of the campaign image
+          example: "https://example.com/image.jpg"
+        status:
+          type: string
+          enum: [pending, active, paused, completed, rejected]
+          description: Current status of the campaign
+          example: "active"
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the campaign was created
+          example: "2025-01-15T10:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp when the campaign was last updated
+          example: "2025-01-15T10:00:00Z"
+
+    CreateCampaignRequest:
+      type: object
+      required:
+        - recipient_id
+        - title
+        - description
+        - category
+        - location
+      properties:
+        recipient_id:
+          type: string
+          format: uuid
+          description: ID of the user creating the campaign
+          example: "660e8400-e29b-41d4-a716-446655440001"
+        title:
+          type: string
+          description: Title of the campaign
+          example: "Medical Fund"
+          minLength: 1
+        description:
+          type: string
+          description: Detailed description of the campaign
+          example: "Help with medical expenses for surgery"
+          minLength: 1
+        category:
+          type: string
+          description: Category of the campaign
+          example: "Medical"
+          minLength: 1
+        location:
+          type: string
+          description: Location of the campaign
+          example: "Addis Ababa, Ethiopia"
+          minLength: 1
+        goal_amount:
+          type: number
+          format: float
+          nullable: true
+          description: Target amount for the campaign (optional)
+          example: 5000
+          minimum: 0
+        collected_amount:
+          type: number
+          format: float
+          nullable: true
+          description: Initial collected amount (optional, defaults to 0)
+          example: 0
+          minimum: 0
+        image_url:
+          type: string
+          format: uri
+          nullable: true
+          description: URL of the campaign image (optional)
+          example: "https://example.com/image.jpg"
+        status:
+          type: string
+          enum: [pending, active]
+          description: Initial status (defaults to 'pending')
+          example: "pending"
+          default: "pending"
+
+    UpdateCampaignRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Updated title
+          example: "Updated Campaign Title"
+          minLength: 1
+        description:
+          type: string
+          description: Updated description
+          example: "Updated description"
+          minLength: 1
+        category:
+          type: string
+          description: Updated category
+          example: "Medical"
+          minLength: 1
+        location:
+          type: string
+          description: Updated location
+          example: "New Location"
+          minLength: 1
+        goal_amount:
+          type: number
+          format: float
+          nullable: true
+          description: Updated goal amount
+          example: 6000
+          minimum: 0
+        collected_amount:
+          type: number
+          format: float
+          nullable: true
+          description: Updated collected amount
+          example: 3000
+          minimum: 0
+        image_url:
+          type: string
+          format: uri
+          nullable: true
+          description: Updated image URL
+          example: "https://example.com/new-image.jpg"
+        status:
+          type: string
+          enum: [pending, active, paused, completed, rejected]
+          description: Updated status
+          example: "active"
+
+    ContributeRequest:
+      type: object
+      required:
+        - amount
+      properties:
+        amount:
+          type: number
+          format: float
+          description: Contribution amount (must be greater than 0)
+          example: 100.50
+          minimum: 0.01
+
+    Error:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: Error message
+          example: "Validation failed"
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                example: "recipient_id"
+              message:
+                type: string
+                example: "Invalid recipient_id - must be a valid UUID"
+
+  responses:
+    BadRequest:
+      description: Bad request - validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            message: "Validation failed"
+            errors:
+              - field: "recipient_id"
+                message: "Invalid recipient_id - must be a valid UUID"
+              - field: "amount"
+                message: "Amount must be greater than 0"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            message: "Campaign not found"
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            message: "Internal server error"

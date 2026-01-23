@@ -1,0 +1,473 @@
+openapi: 3.0.3
+info:
+  title: Donation Service API
+  description: |
+    Microservice for managing donation listings and lifecycle.
+
+    This service handles all donation-related operations including:
+    - Creating new donation listings
+    - Retrieving donations with filtering
+    - Updating donation status and details
+    - Deleting donations
+    - Publishing events via RabbitMQ
+
+    ## Events Published
+    - `donation.created` - When a donation is created
+    - `donation.status.changed` - When donation status changes
+    - `donation.claimed` - When a donation is claimed
+    - `donation.deleted` - When a donation is deleted
+  version: 1.0.0
+  contact:
+    name: Donation Service Team
+    email: support@donation-platform.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3001
+    description: Local development server
+  - url: http://localhost:3001/api
+    description: Local API base path
+  - url: https://api.donation-platform.com
+    description: Production server
+
+tags:
+  - name: Donations
+    description: Donation management operations
+  - name: Health
+    description: Service health check
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: Returns the health status of the service
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2025-01-15T10:30:00Z"
+                  service:
+                    type: string
+                    example: "donation-service"
+                  database:
+                    type: string
+                    example: "connected"
+                  messaging:
+                    type: string
+                    example: "connected"
+
+  /api/donations:
+    get:
+      tags:
+        - Donations
+      summary: List donations
+      description: |
+        Retrieve a list of donations with optional filtering.
+        Supports filtering by status, category, and donor_id.
+      operationId: getDonations
+      parameters:
+        - name: status
+          in: query
+          description: Filter by donation status
+          required: false
+          schema:
+            type: string
+            enum: [pending, available, claimed, completed, rejected]
+          example: available
+        - name: category
+          in: query
+          description: Filter by donation category
+          required: false
+          schema:
+            type: string
+          example: Food
+        - name: donor_id
+          in: query
+          description: Filter by donor ID (UUID)
+          required: false
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Donation"
+              example:
+                - id: "550e8400-e29b-41d4-a716-446655440000"
+                  donor_id: "660e8400-e29b-41d4-a716-446655440001"
+                  title: "Books for Education"
+                  description: "Educational books for children"
+                  category: "Books"
+                  location: "Addis Ababa"
+                  image_url: "https://example.com/image.jpg"
+                  status: "available"
+                  created_at: "2025-01-15T10:00:00Z"
+                  updated_at: "2025-01-15T10:00:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      tags:
+        - Donations
+      summary: Create a new donation
+      description: |
+        Create a new donation listing. The donation will be created with status 'pending' by default.
+        An event will be published to RabbitMQ upon successful creation.
+      operationId: createDonation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDonationRequest"
+            example:
+              donor_id: "660e8400-e29b-41d4-a716-446655440001"
+              title: "Books for Education"
+              description: "Educational books for children in need"
+              category: "Books"
+              location: "Addis Ababa, Ethiopia"
+              image_url: "https://example.com/image.jpg"
+              status: "pending"
+      responses:
+        "201":
+          description: Donation created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Donation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/donations/{id}:
+    get:
+      tags:
+        - Donations
+      summary: Get donation by ID
+      description: Retrieve a specific donation by its UUID
+      operationId: getDonationById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Donation UUID
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Donation"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      tags:
+        - Donations
+      summary: Update donation
+      description: |
+        Update an existing donation. Only provided fields will be updated.
+        An event will be published if the status changes.
+      operationId: updateDonation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Donation UUID
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDonationRequest"
+            example:
+              title: "Updated Book Title"
+              status: "claimed"
+      responses:
+        "200":
+          description: Donation updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Donation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    delete:
+      tags:
+        - Donations
+      summary: Delete donation
+      description: |
+        Delete a donation by ID. An event will be published to RabbitMQ.
+      operationId: deleteDonation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Donation UUID
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        "200":
+          description: Donation deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Donation deleted successfully"
+                  id:
+                    type: string
+                    format: uuid
+                    example: "550e8400-e29b-41d4-a716-446655440000"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  schemas:
+    Donation:
+      type: object
+      required:
+        - id
+        - donor_id
+        - title
+        - description
+        - category
+        - location
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique donation identifier
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        donor_id:
+          type: string
+          format: uuid
+          description: ID of the user who created the donation
+          example: "660e8400-e29b-41d4-a716-446655440001"
+        title:
+          type: string
+          description: Title of the donation
+          example: "Books for Education"
+          minLength: 1
+        description:
+          type: string
+          description: Detailed description of the donation
+          example: "Educational books for children in need"
+          minLength: 1
+        category:
+          type: string
+          description: Category of the donation
+          example: "Books"
+          minLength: 1
+        location:
+          type: string
+          description: Location where the donation is available
+          example: "Addis Ababa, Ethiopia"
+          minLength: 1
+        image_url:
+          type: string
+          format: uri
+          nullable: true
+          description: URL of the donation image
+          example: "https://example.com/image.jpg"
+        status:
+          type: string
+          enum: [pending, available, claimed, completed, rejected]
+          description: Current status of the donation
+          example: "available"
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the donation was created
+          example: "2025-01-15T10:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp when the donation was last updated
+          example: "2025-01-15T10:00:00Z"
+
+    CreateDonationRequest:
+      type: object
+      required:
+        - donor_id
+        - title
+        - description
+        - category
+        - location
+      properties:
+        donor_id:
+          type: string
+          format: uuid
+          description: ID of the user creating the donation
+          example: "660e8400-e29b-41d4-a716-446655440001"
+        title:
+          type: string
+          description: Title of the donation
+          example: "Books for Education"
+          minLength: 1
+        description:
+          type: string
+          description: Detailed description of the donation
+          example: "Educational books for children in need"
+          minLength: 1
+        category:
+          type: string
+          description: Category of the donation
+          example: "Books"
+          minLength: 1
+        location:
+          type: string
+          description: Location where the donation is available
+          example: "Addis Ababa, Ethiopia"
+          minLength: 1
+        image_url:
+          type: string
+          format: uri
+          nullable: true
+          description: URL of the donation image (optional)
+          example: "https://example.com/image.jpg"
+        status:
+          type: string
+          enum: [pending, available]
+          description: Initial status (defaults to 'pending')
+          example: "pending"
+          default: "pending"
+
+    UpdateDonationRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Updated title
+          example: "Updated Book Title"
+          minLength: 1
+        description:
+          type: string
+          description: Updated description
+          example: "Updated description"
+          minLength: 1
+        category:
+          type: string
+          description: Updated category
+          example: "Books"
+          minLength: 1
+        location:
+          type: string
+          description: Updated location
+          example: "New Location"
+          minLength: 1
+        image_url:
+          type: string
+          format: uri
+          nullable: true
+          description: Updated image URL
+          example: "https://example.com/new-image.jpg"
+        status:
+          type: string
+          enum: [pending, available, claimed, completed, rejected]
+          description: Updated status
+          example: "claimed"
+
+    Error:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: Error message
+          example: "Validation failed"
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                example: "donor_id"
+              message:
+                type: string
+                example: "Invalid donor_id - must be a valid UUID"
+
+  responses:
+    BadRequest:
+      description: Bad request - validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            message: "Validation failed"
+            errors:
+              - field: "donor_id"
+                message: "Invalid donor_id - must be a valid UUID"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            message: "Donation not found"
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            message: "Internal server error"

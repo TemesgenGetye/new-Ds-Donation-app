@@ -22,6 +22,7 @@ import {
   Alert,
   FlatList,
   Image,
+  Platform,
   RefreshControl,
   StyleSheet,
   Text,
@@ -196,17 +197,49 @@ export default function RequestsScreen() {
     fetchRequests();
   };
 
+  const getRequestServiceUrl = (): string => {
+    const MACHINE_IP = "192.168.1.3";
+    if (process.env.EXPO_PUBLIC_REQUEST_SERVICE_URL && process.env.EXPO_PUBLIC_REQUEST_SERVICE_URL !== "http://localhost:3004") {
+      return process.env.EXPO_PUBLIC_REQUEST_SERVICE_URL;
+    }
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      return `http://${MACHINE_IP}:3004`;
+    }
+    return "http://localhost:3004";
+  };
+
+  const getDonationServiceUrl = (): string => {
+    const MACHINE_IP = "192.168.1.3";
+    if (process.env.EXPO_PUBLIC_DONATION_SERVICE_URL && process.env.EXPO_PUBLIC_DONATION_SERVICE_URL !== "http://localhost:3001") {
+      return process.env.EXPO_PUBLIC_DONATION_SERVICE_URL;
+    }
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      return `http://${MACHINE_IP}:3001`;
+    }
+    return "http://localhost:3001";
+  };
+
   const handleRequestAction = async (
     requestId: string,
     action: "approved" | "rejected"
   ) => {
     try {
-      const { error } = await supabase
-        .from("requests")
-        .update({ status: action, updated_at: new Date().toISOString() })
-        .eq("id", requestId);
+      // Call request-service API to update status (this will publish RabbitMQ events)
+      const requestServiceUrl = getRequestServiceUrl();
+      const response = await fetch(`${requestServiceUrl}/api/requests/${requestId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          status: action,
+        }),
+      });
 
-      if (error) throw error;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to update request" }));
+        throw new Error(errorData.error || `Failed to update request: ${response.status}`);
+      }
 
       // Update local state
       setRequests((prev) =>
@@ -216,21 +249,30 @@ export default function RequestsScreen() {
       );
 
       Alert.alert("Success", `Request ${action} successfully!`);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error updating request:", error);
-      Alert.alert("Error", "Failed to update request");
+      Alert.alert("Error", error.message || "Failed to update request");
     }
   };
 
   const handleCompleteDonation = async (request: Request) => {
     try {
-      // Update donation status to completed
-      const { error: donationError } = await supabase
-        .from("donations")
-        .update({ status: "completed" })
-        .eq("id", request.donation_id);
+      // Call donation-service API to update status (this will publish RabbitMQ events)
+      const donationServiceUrl = getDonationServiceUrl();
+      const response = await fetch(`${donationServiceUrl}/api/donations/${request.donation_id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          status: "completed",
+        }),
+      });
 
-      if (donationError) throw donationError;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to update donation" }));
+        throw new Error(errorData.error || `Failed to update donation: ${response.status}`);
+      }
 
       // Update local state to reflect the donation is completed
       setRequests((prev) =>
@@ -242,9 +284,9 @@ export default function RequestsScreen() {
       );
 
       Alert.alert("Success", "Donation marked as completed!");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error completing donation:", error);
-      Alert.alert("Error", "Failed to complete donation");
+      Alert.alert("Error", error.message || "Failed to complete donation");
     }
   };
 

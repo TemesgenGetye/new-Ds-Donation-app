@@ -100,6 +100,7 @@ export default function CampaignDetailsScreen() {
         },
         (payload) => {
           const newMessage = payload.new as any;
+          console.log("📨 New message received via real-time subscription:", newMessage);
 
           // Ignore our own messages
           if (!profile || newMessage.sender_id === profile.id) {
@@ -132,54 +133,167 @@ export default function CampaignDetailsScreen() {
       const relevantConversation = conversations.find(
         (c) => c.donor.id === selectedDonor.id
       );
-      setMessages(relevantConversation ? relevantConversation.messages : []);
+      const messagesToSet = relevantConversation ? relevantConversation.messages : [];
+      setMessages(messagesToSet);
+      
+      // Mark messages as read when conversation is opened
+      if (messagesToSet.length > 0 && profile) {
+        markMessagesAsRead(messagesToSet);
+      }
     } else {
       setMessages([]);
     }
   }, [selectedDonor, conversations]);
 
+  const getMessagingServiceUrl = (): string => {
+    const MACHINE_IP = "192.168.1.3";
+    return process.env.EXPO_PUBLIC_MESSAGING_SERVICE_URL || 
+      (Platform.OS === 'android' || Platform.OS === 'ios' ? `http://${MACHINE_IP}:3003` : "http://localhost:3003");
+  };
+
+  const markMessagesAsRead = async (messagesToMark: any[]) => {
+    if (!profile) return;
+    
+    try {
+      const messagingServiceUrl = getMessagingServiceUrl();
+      
+      // Mark all unread messages where current user is the receiver
+      const unreadMessages = messagesToMark.filter(
+        (msg) => msg.receiver_id === profile.id && !msg.read
+      );
+      
+      // Mark each unread message as read
+      await Promise.all(
+        unreadMessages.map(async (msg) => {
+          try {
+            const response = await fetch(
+              `${messagingServiceUrl}/api/messages/${msg.id}/read`,
+              {
+                method: "PATCH",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+              }
+            );
+            
+            if (response.ok) {
+              console.log(`✅ Marked message ${msg.id} as read`);
+            } else {
+              console.error(`Failed to mark message ${msg.id} as read: ${response.status}`);
+            }
+          } catch (error) {
+            console.error(`Error marking message ${msg.id} as read:`, error);
+          }
+        })
+      );
+    } catch (error) {
+      console.error("Error marking messages as read:", error);
+    }
+  };
+
+  // Also mark messages as read when messages are fetched (for donor view)
+  useEffect(() => {
+    if (messages.length > 0 && profile && !isRecipient) {
+      markMessagesAsRead(messages);
+    }
+  }, [messages, profile, isRecipient]);
+
   const fetchMessages = async () => {
     if (!profile) return;
     setLoading(true);
     try {
+      const messagingServiceUrl = getMessagingServiceUrl();
+      
       if (isRecipient) {
-        // Recipient: Fetch all conversations using the new RPC function
-        const { data, error } = await supabase.rpc(
-          "get_campaign_conversations",
-          {
-            p_campaign_id: campaignId,
-            p_user_id: profile.id,
-          }
+        // Recipient: Fetch ALL messages for this campaign (both sent and received)
+        const response = await fetch(
+          `${messagingServiceUrl}/api/messages?campaign_id=${campaignId}&receiver_id=${profile.id}`
         );
-
-        if (error) throw error;
-
-        const convos = (data || []).map((convo: any) => ({
-          donor: {
-            id: convo.other_user_id,
-            full_name: convo.other_user_name,
-          },
-          messages: convo.messages,
-          lastMessage: {
-            content: convo.last_message_content,
-            created_at: convo.last_message_at,
-          },
-        }));
-
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch messages: ${response.status}`);
+        }
+        
+        const allMessages = await response.json();
+        
+        // Filter to only messages where recipient is involved (sender OR receiver)
+        const recipientMessages = (allMessages || []).filter((msg: any) => 
+          msg.sender_id === profile.id || msg.receiver_id === profile.id
+        );
+        
+        // Group messages by the other user (donor if recipient is receiver, or recipient if recipient is sender)
+        const messagesByOtherUser = new Map<string, any[]>();
+        
+        for (const msg of recipientMessages) {
+          // Get the "other user" ID (the one who is NOT the recipient)
+          const otherUserId = msg.sender_id === profile.id ? msg.receiver_id : msg.sender_id;
+          if (!messagesByOtherUser.has(otherUserId)) {
+            messagesByOtherUser.set(otherUserId, []);
+          }
+          messagesByOtherUser.get(otherUserId)!.push(msg);
+        }
+        
+        // Fetch other user profile information and build conversations
+        const convos = await Promise.all(
+          Array.from(messagesByOtherUser.entries()).map(async ([otherUserId, messages]) => {
+            // Fetch other user profile from main database
+            const { data: otherUserProfile } = await supabase
+              .from("profiles")
+              .select("id, full_name, avatar_url")
+              .eq("id", otherUserId)
+              .single();
+            
+            // Sort messages by created_at
+            const sortedMessages = messages.sort((a, b) => 
+              new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            );
+            
+            // Get last message
+            const lastMessage = sortedMessages[sortedMessages.length - 1];
+            
+            return {
+              donor: {
+                id: otherUserId,
+                full_name: otherUserProfile?.full_name || "Unknown",
+                avatar_url: otherUserProfile?.avatar_url || null,
+              },
+              messages: sortedMessages,
+              lastMessage: {
+                content: lastMessage?.content || "",
+                created_at: lastMessage?.created_at || "",
+              },
+            };
+          })
+        );
+        
+        // Sort conversations by last message time (most recent first)
+        convos.sort((a, b) => 
+          new Date(b.lastMessage.created_at).getTime() - new Date(a.lastMessage.created_at).getTime()
+        );
+        
         setConversations(convos);
       } else {
-        // Donor: Fetch 1-to-1 chat history with the recipient
-        const { data, error } = await supabase
-          .from("messages")
-          .select(`*, sender:sender_id(id, full_name)`)
-          .eq("campaign_id", campaignId)
-          .or(
-            `and(sender_id.eq.${profile.id},receiver_id.eq.${recipientId}),and(sender_id.eq.${recipientId},receiver_id.eq.${profile.id})`
-          )
-          .order("created_at", { ascending: false });
-
-        if (error) throw error;
-        setMessages(data || []);
+        // Donor: Fetch 1-to-1 chat history with the recipient via messaging-service API
+        // Fetch messages where donor is sender OR recipient
+        const response = await fetch(
+          `${messagingServiceUrl}/api/messages?campaign_id=${campaignId}`
+        );
+        
+        if (response.ok) {
+          const data = await response.json();
+          // Filter to only messages between current user (donor) and recipient
+          const filteredMessages = (data || []).filter((msg: any) => 
+            (msg.sender_id === profile.id && msg.receiver_id === recipientId) ||
+            (msg.sender_id === recipientId && msg.receiver_id === profile.id)
+          );
+          // Sort by created_at ascending
+          filteredMessages.sort((a: any, b: any) => 
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+          );
+          setMessages(filteredMessages);
+        } else {
+          throw new Error(`Failed to fetch messages: ${response.status}`);
+        }
       }
     } catch (error) {
       console.error("Error fetching messages:", error);
@@ -234,19 +348,31 @@ export default function CampaignDetailsScreen() {
     }
 
     try {
-      const { error } = await supabase.from("messages").insert({
-        campaign_id: campaignId,
-        sender_id: profile.id,
-        receiver_id: currentRecipientId,
-        content: textToSend,
+      // Call messaging-service API instead of direct Supabase insert
+      const MACHINE_IP = "192.168.1.3";
+      const messagingServiceUrl = process.env.EXPO_PUBLIC_MESSAGING_SERVICE_URL || 
+        (Platform.OS === 'android' || Platform.OS === 'ios' ? `http://${MACHINE_IP}:3003` : "http://localhost:3003");
+      
+      const response = await fetch(`${messagingServiceUrl}/api/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          campaign_id: campaignId,
+          sender_id: profile.id,
+          receiver_id: currentRecipientId,
+          content: textToSend,
+        }),
       });
 
-      if (error) {
-        throw error;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to send message" }));
+        throw new Error(errorData.error || "Failed to send message");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error sending message:", error);
-      Alert.alert("Error", "Failed to send message.");
+      Alert.alert("Error", error.message || "Failed to send message.");
       setMessageText(textToSend); // Re-set text if sending failed
     }
   };

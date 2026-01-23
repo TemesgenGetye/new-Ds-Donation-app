@@ -1,0 +1,119 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
+  donation-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: microservices/donation-service
+    container_name: donation-service
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+      - JWT_SECRET=${JWT_SECRET}
+    ports:
+      - "3001:3001"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  campaign-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: microservices/campaign-service
+    container_name: campaign-service
+    environment:
+      - NODE_ENV=production
+      - PORT=3002
+      - CAMPAIGN_SUPABASE_URL=${CAMPAIGN_SUPABASE_URL}
+      - CAMPAIGN_SUPABASE_KEY=${CAMPAIGN_SUPABASE_KEY}
+      # Explicitly unset old database variables to prevent fallback
+      - SUPABASE_URL=
+      - SUPABASE_KEY=
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+      - JWT_SECRET=${JWT_SECRET}
+    ports:
+      - "3002:3002"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  messaging-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: microservices/messaging-service
+    container_name: messaging-service
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+      - MESSAGING_SUPABASE_URL=${MESSAGING_SUPABASE_URL}
+      - MESSAGING_SUPABASE_KEY=${MESSAGING_SUPABASE_KEY}
+      # Explicitly unset old database variables to prevent fallback
+      - SUPABASE_URL=
+      - SUPABASE_KEY=
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+      - JWT_SECRET=${JWT_SECRET}
+    ports:
+      - "3003:3003"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  request-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: microservices/request-service
+    container_name: request-service
+    environment:
+      - NODE_ENV=production
+      - PORT=3004
+      - REQUEST_SUPABASE_URL=${REQUEST_SUPABASE_URL}
+      - REQUEST_SUPABASE_KEY=${REQUEST_SUPABASE_KEY}
+      # Explicitly unset old database variables to prevent fallback
+      - SUPABASE_URL=
+      - SUPABASE_KEY=
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+      - JWT_SECRET=${JWT_SECRET}
+    ports:
+      - "3004:3004"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
