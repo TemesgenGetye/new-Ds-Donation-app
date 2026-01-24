@@ -276,24 +276,62 @@ export default function AdminScreen() {
 
   const handleRemove = async (type: string, id: string) => {
     try {
-      let table = "";
-      if (type === "user") table = "profiles";
-      if (type === "campaign") table = "campaigns";
-      if (type === "donation") table = "donations";
-      if (!table) return;
-      const { error } = await supabase.from(table).delete().eq("id", id);
-      if (error) throw error;
-      Alert.alert(
-        "Success",
-        `${type.charAt(0).toUpperCase() + type.slice(1)} deleted successfully`
-      );
-      fetchReports();
-      fetchCampaigns();
-      fetchDonations();
-      fetchVerifications();
-    } catch (error) {
+      // For users, delete directly from Supabase (no microservice)
+      if (type === "user") {
+        const { error } = await supabase.from("profiles").delete().eq("id", id);
+        if (error) throw error;
+        Alert.alert("Success", "User deleted successfully");
+        fetchReports();
+        fetchVerifications();
+        return;
+      }
+
+      // For donations, call donation-service API (publishes RabbitMQ events)
+      if (type === "donation") {
+        const donationServiceUrl = getDonationServiceUrl();
+        const response = await fetch(`${donationServiceUrl}/api/donations/${id}`, {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: "Failed to delete donation" }));
+          throw new Error(errorData.error || `Failed to delete donation: ${response.status}`);
+        }
+
+        Alert.alert("Success", "Donation deleted successfully");
+        fetchDonations();
+        fetchReports();
+        return;
+      }
+
+      // For campaigns, call campaign-service API (publishes RabbitMQ events)
+      if (type === "campaign") {
+        const campaignServiceUrl = getCampaignServiceUrl();
+        const response = await fetch(`${campaignServiceUrl}/api/campaigns/${id}`, {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: "Failed to delete campaign" }));
+          throw new Error(errorData.error || `Failed to delete campaign: ${response.status}`);
+        }
+
+        Alert.alert("Success", "Campaign deleted successfully");
+        fetchCampaigns();
+        fetchReports();
+        return;
+      }
+
+      Alert.alert("Error", `Unknown type: ${type}`);
+    } catch (error: any) {
       console.error("Error deleting:", error);
-      Alert.alert("Error", `Failed to delete ${type}`);
+      Alert.alert("Error", error.message || `Failed to delete ${type}`);
     }
   };
 

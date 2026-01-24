@@ -181,7 +181,11 @@ export default function HomeScreen() {
                 }
                 return;
               }
+              
               Alert.alert("Success", "Request sent successfully!");
+              
+              // Note: The requests screen will show the new request when the user navigates to it
+              // since it now fetches from the request-service API which has the new request
             } catch (error: any) {
               console.error("Error sending request:", error);
               Alert.alert("Error", error.message || "Failed to send request");

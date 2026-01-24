@@ -76,6 +76,10 @@ export default function RequestsScreen() {
     }
   }, [profile?.id, profile?.role]);
 
+  // Note: Real-time subscription won't work since requests are in a separate database
+  // Instead, we'll rely on manual refresh or polling
+  // The fetchRequests() function now uses the request-service API which reads from the correct database
+
   const fetchRequests = async () => {
     if (!profile?.id) {
       console.log("No profile ID available");
@@ -93,26 +97,13 @@ export default function RequestsScreen() {
         profile.role
       );
 
-      let query = supabase
-        .from("requests")
-        .select(
-          `
-          *,
-          donations (
-            title,
-            image_url,
-            status
-          ),
-          profiles:recipient_id (
-            full_name,
-            avatar_url
-          )
-        `
-        )
-        .order("created_at", { ascending: false });
+      // Use request-service API instead of direct Supabase query
+      const requestServiceUrl = getRequestServiceUrl();
+      let apiUrl = `${requestServiceUrl}/api/requests`;
 
+      // Add filters based on role
       if (profile.role === "donor") {
-        // Show requests for donor's donations
+        // For donors, we need to get their donation IDs first, then filter
         const { data: donorDonations, error: donationsError } = await supabase
           .from("donations")
           .select("id")
@@ -126,62 +117,104 @@ export default function RequestsScreen() {
         const donationIds = donorDonations?.map((d) => d.id) || [];
         console.log("Donor donation IDs:", donationIds);
 
-        if (donationIds.length > 0) {
-          query = query.in("donation_id", donationIds);
-        } else {
+        if (donationIds.length === 0) {
           console.log("No donations found for donor");
           setRequests([]);
           setLoading(false);
           setRefreshing(false);
           return;
         }
-      } else {
-        // Show recipient's own requests
-        query = query.eq("recipient_id", profile.id);
-      }
 
-      const { data, error } = await query;
-
-      if (error) {
-        console.error("Error fetching requests:", error);
-        throw error;
-      }
-
-      // For recipients, fetch donor information for approved requests
-      if (profile.role === "recipient" && data && data.length > 0) {
-        const requestsWithDonorInfo = await Promise.all(
-          data.map(async (request) => {
-            if (request.status === "approved") {
-              // Get donation to find donor_id
-              const { data: donation } = await supabase
-                .from("donations")
-                .select("donor_id")
-                .eq("id", request.donation_id)
-                .single();
-
-              if (donation) {
-                // Get donor profile
-                const { data: donorProfile } = await supabase
-                  .from("profiles")
-                  .select("email, phone, location, full_name")
-                  .eq("id", donation.donor_id)
-                  .single();
-
-                return {
-                  ...request,
-                  donor_profile: donorProfile,
-                };
-              }
+        // Fetch requests for each donation (request-service doesn't support multiple donation_ids in one query)
+        const allRequests = await Promise.all(
+          donationIds.map(async (donationId) => {
+            try {
+              const response = await fetch(`${apiUrl}?donation_id=${donationId}`);
+              if (!response.ok) return [];
+              return await response.json();
+            } catch (error) {
+              console.error(`Error fetching requests for donation ${donationId}:`, error);
+              return [];
             }
-            return request;
           })
         );
 
-        console.log("Requests with donor info:", requestsWithDonorInfo.length);
-        setRequests(requestsWithDonorInfo);
+        // Flatten and deduplicate
+        const requests = allRequests.flat();
+        const uniqueRequests = requests.filter((req, index, self) =>
+          index === self.findIndex((r) => r.id === req.id)
+        );
+
+        // Fetch donation and profile info from main database
+        const requestsWithDetails = await Promise.all(
+          uniqueRequests.map(async (request) => {
+            const { data: donation } = await supabase
+              .from("donations")
+              .select("title, image_url, status")
+              .eq("id", request.donation_id)
+              .single();
+
+            const { data: recipientProfile } = await supabase
+              .from("profiles")
+              .select("full_name, avatar_url")
+              .eq("id", request.recipient_id)
+              .single();
+
+            return {
+              ...request,
+              donations: donation || { title: "Unknown", image_url: null, status: "unknown" },
+              profiles: recipientProfile || { full_name: "Unknown", avatar_url: null },
+            };
+          })
+        );
+
+        setRequests(requestsWithDetails);
       } else {
-        console.log("Requests fetched:", data?.length || 0);
-        setRequests(data || []);
+        // For recipients, fetch their own requests
+        const response = await fetch(`${apiUrl}?recipient_id=${profile.id}`);
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch requests: ${response.status}`);
+        }
+
+        const requests = await response.json();
+
+        // Fetch donation and donor info for approved requests
+        const requestsWithDetails = await Promise.all(
+          requests.map(async (request: any) => {
+            const { data: donation } = await supabase
+              .from("donations")
+              .select("title, image_url, status, donor_id")
+              .eq("id", request.donation_id)
+              .single();
+
+            const { data: recipientProfile } = await supabase
+              .from("profiles")
+              .select("full_name, avatar_url")
+              .eq("id", request.recipient_id)
+              .single();
+
+            let donorProfile = null;
+            if (request.status === "approved" && donation?.donor_id) {
+              const { data: donor } = await supabase
+                .from("profiles")
+                .select("email, phone, location, full_name")
+                .eq("id", donation.donor_id)
+                .single();
+              donorProfile = donor;
+            }
+
+            return {
+              ...request,
+              donations: donation || { title: "Unknown", image_url: null, status: "unknown" },
+              profiles: recipientProfile || { full_name: "Unknown", avatar_url: null },
+              donor_profile: donorProfile,
+            };
+          })
+        );
+
+        setRequests(requestsWithDetails);
+        console.log("Requests fetched:", requestsWithDetails.length || 0);
       }
     } catch (error) {
       console.error("Error fetching requests:", error);

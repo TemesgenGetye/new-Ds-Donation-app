@@ -153,8 +153,19 @@ export class CampaignService {
         timestamp: new Date().toISOString(),
       });
 
-      // Check if goal is reached
-      if (campaign.goal_amount && newCollectedAmount >= campaign.goal_amount) {
+      // Check if goal is reached and update status if needed
+      if (campaign.goal_amount && newCollectedAmount >= campaign.goal_amount && campaign.status !== 'completed') {
+        // Update campaign status to completed
+        const { error: statusError } = await supabase
+          .from('campaigns')
+          .update({ status: 'completed' })
+          .eq('id', id);
+
+        if (statusError) {
+          logger.warn(`Failed to update campaign status to completed: ${statusError.message}`);
+        }
+
+        // Publish completion event
         await publishEvent('campaign.completed', {
           campaignId: id,
           timestamp: new Date().toISOString(),

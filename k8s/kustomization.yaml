@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: donation-app
+
+resources:
+  # Infrastructure (databases, message queues, configs)
+  - infrastructure/namespace.yaml
+  - infrastructure/configmap.yaml
+  - infrastructure/secrets.yaml
+  - infrastructure/rabbitmq.yaml
+  - infrastructure/ingress.yaml
+  
+  # Services (microservices)
+  - services/donation-service.yaml
+  - services/campaign-service.yaml
+  - services/messaging-service.yaml
+  - services/request-service.yaml
+
+commonLabels:
+  app: donation-app
+  managed-by: kustomize

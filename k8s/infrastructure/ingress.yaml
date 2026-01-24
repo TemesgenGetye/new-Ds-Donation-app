@@ -1,0 +1,133 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: donation-app-ingress
+  namespace: donation-app
+  labels:
+    app: donation-app
+    infrastructure: ingress
+  annotations:
+    # Nginx Ingress Controller annotations
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # CORS support (if needed)
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization"
+spec:
+  ingressClassName: nginx
+  rules:
+    # Donation Service
+    - host: donation.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: donation-service
+                port:
+                  number: 3001
+    
+    # Campaign Service
+    - host: campaign.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: campaign-service
+                port:
+                  number: 3002
+    
+    # Messaging Service
+    - host: messaging.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: messaging-service
+                port:
+                  number: 3003
+    
+    # Request Service
+    - host: request.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: request-service
+                port:
+                  number: 3004
+    
+    # RabbitMQ Management UI
+    - host: rabbitmq.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rabbitmq
+                port:
+                  number: 15672
+
+---
+# Alternative: Single host with path-based routing
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: donation-app-ingress-paths
+  namespace: donation-app
+  labels:
+    app: donation-app
+    infrastructure: ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.local
+      http:
+        paths:
+          # Donation Service: /api/donation
+          - path: /donation(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: donation-service
+                port:
+                  number: 3001
+          # Campaign Service: /api/campaign
+          - path: /campaign(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: campaign-service
+                port:
+                  number: 3002
+          # Messaging Service: /api/messaging
+          - path: /messaging(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: messaging-service
+                port:
+                  number: 3003
+          # Request Service: /api/request
+          - path: /request(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: request-service
+                port:
+                  number: 3004

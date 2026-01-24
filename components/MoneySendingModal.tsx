@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   Alert,
   Modal,
+  Platform,
   StyleSheet,
   Text,
   TextInput,
@@ -67,53 +68,36 @@ export default function MoneySendingModal({
     setLoading(true);
 
     try {
-      // Update the campaign's collected amount
-      const newCollectedAmount = (currentCollectedAmount || 0) + numAmount;
-
-      // First, let's try to get the current campaign to see if we can access it
-      const { data: currentCampaign, error: fetchError } = await supabase
-        .from("campaigns")
-        .select("collected_amount, recipient_id")
-        .eq("id", campaignId)
-        .single();
-
-      if (fetchError) {
-        console.error("Error fetching campaign:", fetchError);
-        throw fetchError;
-      }
-
-      console.log("Current campaign data:", currentCampaign);
-
-      // Now try to update
-      const { data, error } = await supabase
-        .from("campaigns")
-        .update({
-          collected_amount: newCollectedAmount,
-        })
-        .eq("id", campaignId)
-        .select("id, collected_amount, updated_at");
-
-      if (error) {
-        console.error("Supabase error details:", {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-        });
-
-        // Try to get more specific error information
-        if (error.code === "42501") {
-          Alert.alert(
-            "Permission Error",
-            "You don't have permission to update this campaign. This might be due to Row Level Security (RLS) policies."
-          );
-        } else {
-          Alert.alert("Database Error", `Error: ${error.message}`);
+      // Use campaign-service API to contribute (this publishes RabbitMQ events)
+      const getCampaignServiceUrl = (): string => {
+        const MACHINE_IP = "192.168.1.3";
+        if (process.env.EXPO_PUBLIC_CAMPAIGN_SERVICE_URL && process.env.EXPO_PUBLIC_CAMPAIGN_SERVICE_URL !== "http://localhost:3002") {
+          return process.env.EXPO_PUBLIC_CAMPAIGN_SERVICE_URL;
         }
-        throw error;
+        if (Platform.OS === 'android' || Platform.OS === 'ios') {
+          return `http://${MACHINE_IP}:3002`;
+        }
+        return "http://localhost:3002";
+      };
+
+      const campaignServiceUrl = getCampaignServiceUrl();
+      const response = await fetch(`${campaignServiceUrl}/api/campaigns/${campaignId}/contribute`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          amount: numAmount,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Failed to contribute to campaign" }));
+        throw new Error(errorData.error || `Failed to contribute: ${response.status}`);
       }
 
-      console.log("Update successful:", data);
+      const updatedCampaign = await response.json();
+      console.log("Contribution successful:", updatedCampaign);
 
       Alert.alert(
         "Success",

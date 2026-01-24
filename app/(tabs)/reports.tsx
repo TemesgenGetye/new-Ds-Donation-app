@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -70,32 +71,111 @@ export default function ReportsScreen() {
     }
   };
 
+  const getDonationServiceUrl = (): string => {
+    const MACHINE_IP = "192.168.1.3";
+    if (process.env.EXPO_PUBLIC_DONATION_SERVICE_URL && process.env.EXPO_PUBLIC_DONATION_SERVICE_URL !== "http://localhost:3001") {
+      return process.env.EXPO_PUBLIC_DONATION_SERVICE_URL;
+    }
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      return `http://${MACHINE_IP}:3001`;
+    }
+    return "http://localhost:3001";
+  };
+
+  const getCampaignServiceUrl = (): string => {
+    const MACHINE_IP = "192.168.1.3";
+    if (process.env.EXPO_PUBLIC_CAMPAIGN_SERVICE_URL && process.env.EXPO_PUBLIC_CAMPAIGN_SERVICE_URL !== "http://localhost:3002") {
+      return process.env.EXPO_PUBLIC_CAMPAIGN_SERVICE_URL;
+    }
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      return `http://${MACHINE_IP}:3002`;
+    }
+    return "http://localhost:3002";
+  };
+
+  const getRequestServiceUrl = (): string => {
+    const MACHINE_IP = "192.168.1.3";
+    if (process.env.EXPO_PUBLIC_REQUEST_SERVICE_URL && process.env.EXPO_PUBLIC_REQUEST_SERVICE_URL !== "http://localhost:3004") {
+      return process.env.EXPO_PUBLIC_REQUEST_SERVICE_URL;
+    }
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
+      return `http://${MACHINE_IP}:3004`;
+    }
+    return "http://localhost:3004";
+  };
+
   const handleRemove = async (type: string, id: string) => {
     try {
-      let table = "";
-      if (type === "user") table = "profiles";
-      if (type === "campaign") table = "campaigns";
-      if (type === "donation") table = "donations";
-      if (type === "request") table = "requests";
-      if (!table) return;
-
-      console.log("table", table, "id", id);
-
-      const { error, count } = await supabase.from(table).delete().eq("id", id);
-
-      if (error) throw error;
-      if (count === 0) {
-        Alert.alert("Error", "No rows were deleted. Check RLS or ID.");
+      // For users, delete directly from Supabase (no microservice)
+      if (type === "user") {
+        const { error, count } = await supabase.from("profiles").delete().eq("id", id);
+        if (error) throw error;
+        if (count === 0) {
+          Alert.alert("Error", "No rows were deleted. Check RLS or ID.");
+          return;
+        }
+        Alert.alert("Success", "User deleted successfully");
+        fetchReports();
         return;
       }
-      Alert.alert(
-        "Success",
-        `${type.charAt(0).toUpperCase() + type.slice(1)} deleted successfully`
-      );
-      fetchReports();
-    } catch (error) {
+
+      // For donations, call donation-service API (publishes RabbitMQ events)
+      if (type === "donation") {
+        const donationServiceUrl = getDonationServiceUrl();
+        const response = await fetch(`${donationServiceUrl}/api/donations/${id}`, {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: "Failed to delete donation" }));
+          throw new Error(errorData.error || `Failed to delete donation: ${response.status}`);
+        }
+
+        Alert.alert("Success", "Donation deleted successfully");
+        fetchReports();
+        return;
+      }
+
+      // For campaigns, call campaign-service API (publishes RabbitMQ events)
+      if (type === "campaign") {
+        const campaignServiceUrl = getCampaignServiceUrl();
+        const response = await fetch(`${campaignServiceUrl}/api/campaigns/${id}`, {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: "Failed to delete campaign" }));
+          throw new Error(errorData.error || `Failed to delete campaign: ${response.status}`);
+        }
+
+        Alert.alert("Success", "Campaign deleted successfully");
+        fetchReports();
+        return;
+      }
+
+      // For requests, delete directly from Supabase (request-service doesn't have DELETE endpoint)
+      if (type === "request") {
+        const { error, count } = await supabase.from("requests").delete().eq("id", id);
+        if (error) throw error;
+        if (count === 0) {
+          Alert.alert("Error", "No rows were deleted. Check RLS or ID.");
+          return;
+        }
+        Alert.alert("Success", "Request deleted successfully");
+        fetchReports();
+        return;
+      }
+
+      Alert.alert("Error", `Unknown type: ${type}`);
+    } catch (error: any) {
       console.error("Error deleting:", error);
-      Alert.alert("Error", `Failed to delete ${type}`);
+      Alert.alert("Error", error.message || `Failed to delete ${type}`);
     }
   };
 
